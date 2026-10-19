@@ -1,0 +1,876 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Minimalist 3D Board Games</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/chess.js/0.10.3/chess.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.2/gsap.min.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet">
+    <style>
+        body { margin: 0; padding: 0; overflow: hidden; font-family: 'Inter', sans-serif; background-color: #f4f4f5; -webkit-tap-highlight-color: transparent; }
+        #canvas-container { position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: 1; }
+        #ui-layer { position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: 10; pointer-events: none; display: flex; flex-direction: column; justify-content: space-between; padding: 2rem; box-sizing: border-box; }
+        .pointer-events-auto { pointer-events: auto; }
+        .glass-panel { background: rgba(255,255,255,0.7); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); border: 1px solid rgba(255,255,255,0.3); box-shadow: 0 8px 32px rgba(0,0,0,0.05); border-radius: 9999px; }
+    </style>
+</head>
+<body onload="initApp()">
+    <div id="canvas-container"></div>
+    <div id="ui-layer">
+        <div class="flex justify-between items-start w-full max-w-4xl mx-auto">
+            <div class="glass-panel px-6 py-3 pointer-events-auto">
+                <h1 id="status-title" class="text-xl font-semibold text-zinc-800 tracking-tight">White to move</h1>
+                <p id="status-subtitle" class="text-sm font-medium text-zinc-500 mt-0.5 h-5"></p>
+            </div>
+            <div class="flex gap-3 pointer-events-auto">
+                <button id="btn-diff" onclick="toggleDifficulty()" class="glass-panel px-5 py-3 text-sm font-semibold text-zinc-600 hover:text-zinc-900 transition-colors">Hard</button>
+                <button id="btn-mode" onclick="toggleMode()" class="glass-panel px-5 py-3 text-sm font-semibold text-zinc-600 hover:text-zinc-900 transition-colors">Vs AI</button>
+                <button onclick="resetGame()" class="glass-panel px-5 py-3 text-sm font-semibold text-zinc-600 hover:text-zinc-900 transition-colors">Restart</button>
+            </div>
+        </div>
+        <div class="flex justify-center w-full pb-4">
+            <div class="glass-panel flex items-center p-1.5 gap-1 pointer-events-auto relative">
+                <div id="nav-indicator" class="absolute top-1.5 bottom-1.5 left-1.5 w-[calc(50%-6px)] bg-white rounded-full shadow-sm transition-transform duration-500 ease-[cubic-bezier(0.4,0,0.2,1)]"></div>
+                <button onclick="switchGame('chess')" id="btn-chess" class="relative z-10 px-8 py-2.5 text-sm font-semibold tracking-wider text-zinc-800 transition-colors duration-300 w-32 text-center rounded-full">CHESS</button>
+                <button onclick="switchGame('checkers')" id="btn-checkers" class="relative z-10 px-8 py-2.5 text-sm font-semibold tracking-wider text-zinc-400 transition-colors duration-300 w-32 text-center rounded-full">CHECKERS</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // --- 3D Engine Variables ---
+        let scene, camera, renderer, controls;
+        let boardGroup, piecesGroup, highlightsGroup;
+        const squareSize = 1;
+        const boardOffset = 3.5;
+        let raycaster = new THREE.Raycaster();
+        let mouse = new THREE.Vector2();
+
+        // --- Game State ---
+        let activeGame = 'chess';
+        let chessEngine = new Chess();
+        let boardState = [];
+        let pieces3D = {};
+        let selectedSquare = null;
+        let validMoves = [];
+        let checkersTurn = 'w';
+        let checkersWinner = null;
+        let checkersActivePiece = null;
+        let playAgainstAI = true;
+        let aiDifficulty = 'Hard'; // Easy, Medium, Hard, Expert
+
+        // --- Colors ---
+        const colorLight = 0xfcfcfc;
+        const colorDark = 0xe8e8e9;
+        const colorPieceWhite = 0xffffff;
+        const colorPieceBlack = 0x1f1f22;
+        const colorHighlight = 0x8b5cf6;
+
+        function initApp() {
+            init3D();
+            buildLinelessBoard();
+            window.addEventListener('resize', onWindowResize);
+            renderer.domElement.addEventListener('pointerdown', onPointerDown);
+            resetGame();
+            animate();
+        }
+
+        function init3D() {
+            const container = document.getElementById('canvas-container');
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0xf4f4f5);
+            scene.fog = new THREE.FogExp2(0xf4f4f5, 0.03);
+
+            camera = new THREE.PerspectiveCamera(40, window.innerWidth / window.innerHeight, 0.1, 100);
+            camera.position.set(0, 8, 10);
+
+            renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(window.devicePixelRatio);
+            renderer.shadowMap.enabled = true;
+            renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+            container.appendChild(renderer.domElement);
+
+            controls = new THREE.OrbitControls(camera, renderer.domElement);
+            controls.enableDamping = true;
+            controls.dampingFactor = 0.05;
+            controls.maxPolarAngle = Math.PI / 2.2;
+            controls.minDistance = 5;
+            controls.maxDistance = 20;
+
+            scene.add(new THREE.AmbientLight(0xffffff, 0.6));
+            const dirLight = new THREE.DirectionalLight(0xffffff, 0.5);
+            dirLight.position.set(5, 10, 7);
+            dirLight.castShadow = true;
+            dirLight.shadow.mapSize.width = 2048;
+            dirLight.shadow.mapSize.height = 2048;
+            dirLight.shadow.camera.near = 0.5;
+            dirLight.shadow.camera.far = 25;
+            dirLight.shadow.camera.left = -6;
+            dirLight.shadow.camera.right = 6;
+            dirLight.shadow.camera.top = 6;
+            dirLight.shadow.camera.bottom = -6;
+            dirLight.shadow.bias = -0.001;
+            scene.add(dirLight);
+
+            boardGroup = new THREE.Group(); scene.add(boardGroup);
+            piecesGroup = new THREE.Group(); scene.add(piecesGroup);
+            highlightsGroup = new THREE.Group(); scene.add(highlightsGroup);
+        }
+
+        function buildLinelessBoard() {
+            const boardBase = new THREE.Mesh(new THREE.BoxGeometry(8, 0.5, 8), new THREE.MeshStandardMaterial({ color: 0xdddddd }));
+            boardBase.position.y = -0.25;
+            boardBase.receiveShadow = true;
+            boardGroup.add(boardBase);
+
+            const squareGeo = new THREE.PlaneGeometry(squareSize, squareSize);
+            const matLight = new THREE.MeshStandardMaterial({ color: colorLight, roughness: 0.8 });
+            const matDark = new THREE.MeshStandardMaterial({ color: colorDark, roughness: 0.8 });
+
+            for (let row = 0; row < 8; row++) {
+                for (let col = 0; col < 8; col++) {
+                    const square = new THREE.Mesh(squareGeo, (row + col) % 2 === 0 ? matLight : matDark);
+                    square.rotation.x = -Math.PI / 2;
+                    square.position.set(col - boardOffset, 0.001, row - boardOffset);
+                    square.receiveShadow = true;
+                    square.userData = { row, col };
+                    boardGroup.add(square);
+                }
+            }
+        }
+
+        function createPieceMesh(game, type, colorStr) {
+            const isWhite = colorStr === 'w';
+            const material = new THREE.MeshPhysicalMaterial({
+                color: isWhite ? colorPieceWhite : colorPieceBlack,
+                metalness: 0.1,
+                roughness: isWhite ? 0.2 : 0.6,
+                clearcoat: isWhite ? 0.8 : 0.1,
+                clearcoatRoughness: 0.2
+            });
+            let geo;
+            if (game === 'checkers') {
+                geo = new THREE.CylinderGeometry(0.35, 0.35, 0.15, 32);
+                geo.translate(0, 0.075, 0);
+            } else {
+                switch (type) {
+                    case 'p': geo = new THREE.ConeGeometry(0.3, 0.6, 16); geo.translate(0, 0.3, 0); break;
+                    case 'r': geo = new THREE.BoxGeometry(0.5, 0.6, 0.5); geo.translate(0, 0.3, 0); break;
+                    case 'n': geo = new THREE.BoxGeometry(0.4, 0.4, 0.4); geo.translate(0, 0.2, 0); break;
+                    case 'b': geo = new THREE.CylinderGeometry(0.2, 0.3, 0.8, 8); geo.translate(0, 0.4, 0); break;
+                    case 'q': geo = new THREE.CylinderGeometry(0.3, 0.3, 0.9, 32); geo.translate(0, 0.45, 0); break;
+                    case 'k': geo = new THREE.BoxGeometry(0.4, 1.0, 0.4); geo.translate(0, 0.5, 0); break;
+                }
+            }
+            const mesh = new THREE.Mesh(geo, material);
+            mesh.castShadow = true;
+            mesh.receiveShadow = true;
+            return mesh;
+        }
+
+        // --- Game management ---
+        function toggleMode() {
+            playAgainstAI = !playAgainstAI;
+            document.getElementById('btn-mode').innerText = playAgainstAI ? 'Vs AI' : 'Pass & Play';
+            document.getElementById('btn-diff').style.display = playAgainstAI ? 'block' : 'none';
+            updateStatusText();
+            if (playAgainstAI) {
+                if (activeGame === 'chess' && chessEngine.turn() === 'b' && !chessEngine.game_over()) {
+                    setTimeout(makeChessAIMove, 500);
+                } else if (activeGame === 'checkers' && checkersTurn === 'b' && !checkersWinner) {
+                    setTimeout(makeCheckersAIMove, 500);
+                }
+            }
+        }
+
+        function toggleDifficulty() {
+            const levels = ['Easy', 'Medium', 'Hard', 'Expert'];
+            aiDifficulty = levels[(levels.indexOf(aiDifficulty) + 1) % levels.length];
+            document.getElementById('btn-diff').innerText = aiDifficulty;
+        }
+
+        function switchGame(game) {
+            if (activeGame === game) return;
+            activeGame = game;
+            const indicator = document.getElementById('nav-indicator');
+            const btnChess = document.getElementById('btn-chess');
+            const btnCheckers = document.getElementById('btn-checkers');
+            if (game === 'chess') {
+                indicator.style.transform = 'translateX(0)';
+                btnChess.classList.replace('text-zinc-400', 'text-zinc-800');
+                btnCheckers.classList.replace('text-zinc-800', 'text-zinc-400');
+            } else {
+                indicator.style.transform = 'translateX(100%)';
+                btnChess.classList.replace('text-zinc-800', 'text-zinc-400');
+                btnCheckers.classList.replace('text-zinc-400', 'text-zinc-800');
+            }
+            resetGame();
+        }
+
+        function resetGame() {
+            while (piecesGroup.children.length > 0) piecesGroup.remove(piecesGroup.children[0]);
+            pieces3D = {};
+            boardState = [];
+            selectedSquare = null;
+            validMoves = [];
+            clearHighlights();
+            if (activeGame === 'chess') {
+                chessEngine.reset();
+                syncChessTo3D();
+            } else {
+                initCheckersState();
+                syncCheckersTo3D();
+            }
+            updateStatusText();
+        }
+
+        function syncChessTo3D() {
+            const board = chessEngine.board();
+            boardState = board;
+            while (piecesGroup.children.length > 0) piecesGroup.remove(piecesGroup.children[0]);
+            pieces3D = {};
+            let idCounter = 0;
+            for (let row = 0; row < 8; row++) {
+                for (let col = 0; col < 8; col++) {
+                    const piece = board[row][col];
+                    if (piece) {
+                        const id = `ch_${idCounter++}`;
+                        const mesh = createPieceMesh('chess', piece.type, piece.color);
+                        mesh.position.set(col - boardOffset, 0, row - boardOffset);
+                        mesh.userData = { id, row, col, type: piece.type, color: piece.color };
+                        piecesGroup.add(mesh);
+                        pieces3D[id] = mesh;
+                    }
+                }
+            }
+        }
+
+        // --- Checkers setup ---
+        function initCheckersState() {
+            checkersTurn = 'w';
+            checkersWinner = null;
+            checkersActivePiece = null;
+            boardState = Array(8).fill(null).map(() => Array(8).fill(null));
+            let idCounter = 0;
+            for (let row = 0; row < 8; row++) {
+                for (let col = 0; col < 8; col++) {
+                    if ((row + col) % 2 !== 0) {
+                        if (row < 3) boardState[row][col] = { id: `ck_${idCounter++}`, color: 'b', isKing: false };
+                        else if (row > 4) boardState[row][col] = { id: `ck_${idCounter++}`, color: 'w', isKing: false };
+                    }
+                }
+            }
+        }
+
+        // Kings: classic style, a second piece stacked on top (slightly smaller)
+        function addCrown(mesh) {
+            const topGeo = new THREE.CylinderGeometry(0.28, 0.28, 0.15, 32);
+            topGeo.translate(0, 0.225, 0);
+            const top = new THREE.Mesh(topGeo, mesh.material);
+            top.castShadow = true;
+            top.receiveShadow = true;
+            mesh.add(top);
+        }
+
+        function syncCheckersTo3D() {
+            while (piecesGroup.children.length > 0) piecesGroup.remove(piecesGroup.children[0]);
+            pieces3D = {};
+            for (let row = 0; row < 8; row++) {
+                for (let col = 0; col < 8; col++) {
+                    const piece = boardState[row][col];
+                    if (piece) {
+                        const mesh = createPieceMesh('checkers', null, piece.color);
+                        mesh.position.set(col - boardOffset, 0, row - boardOffset);
+                        mesh.userData = { ...piece, row, col };
+                        if (piece.isKing) addCrown(mesh);
+                        piecesGroup.add(mesh);
+                        pieces3D[piece.id] = mesh;
+                    }
+                }
+            }
+        }
+
+        // --- Interaction ---
+        function onPointerDown(event) {
+            mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
+            mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
+            raycaster.setFromCamera(mouse, camera);
+            const intersects = raycaster.intersectObjects([...boardGroup.children, ...piecesGroup.children]);
+            if (intersects.length > 0) {
+                const object = intersects[0].object;
+                if (object.userData && object.userData.row !== undefined) {
+                    handleSquareClick(object.userData.row, object.userData.col);
+                }
+            }
+        }
+
+        function handleSquareClick(row, col) {
+            if (activeGame === 'chess') handleChessClick(row, col);
+            else handleCheckersClick(row, col);
+        }
+
+        function handleChessClick(row, col) {
+            const sq = rcToSq(row, col);
+            if (playAgainstAI && chessEngine.turn() === 'b') return;
+
+            if (selectedSquare) {
+                const move = validMoves.find(m => m.to === sq);
+                if (move) { executeChessMove(move); return; }
+            }
+
+            const piece = chessEngine.get(sq);
+            if (piece && piece.color === chessEngine.turn()) {
+                selectedSquare = sq;
+                validMoves = chessEngine.moves({ square: sq, verbose: true });
+                renderHighlights();
+            } else {
+                selectedSquare = null;
+                validMoves = [];
+                clearHighlights();
+            }
+        }
+
+        function executeChessMove(move) {
+            chessEngine.move(move);
+            selectedSquare = null;
+            validMoves = [];
+            clearHighlights();
+            syncChessTo3D();
+            updateStatusText();
+            if (playAgainstAI && chessEngine.turn() === 'b' && !chessEngine.game_over()) {
+                setTimeout(makeChessAIMove, 500);
+            }
+        }
+
+        // Easy / Medium AI. Hard and Expert are handled by the search engine script at the bottom.
+        function makeChessAIMove() {
+            if (chessEngine.game_over()) return;
+            const moves = chessEngine.moves({ verbose: true });
+            if (moves.length === 0) return;
+            let moveToPlay;
+            const captures = moves.filter(m => m.flags.includes('c') || m.flags.includes('e'));
+            if (aiDifficulty !== 'Easy' && captures.length > 0) {
+                moveToPlay = captures[Math.floor(Math.random() * captures.length)];
+            } else {
+                moveToPlay = moves[Math.floor(Math.random() * moves.length)];
+            }
+            executeChessMove(moveToPlay);
+        }
+
+        // --- Helpers ---
+        function rcToSq(row, col) {
+            return `${'abcdefgh'[col]}${8 - row}`;
+        }
+        function sqToRc(sq) {
+            return { col: 'abcdefgh'.indexOf(sq[0]), row: 8 - parseInt(sq[1]) };
+        }
+
+        function renderHighlights() {
+            clearHighlights();
+            if (!selectedSquare) return;
+            const selRc = sqToRc(selectedSquare);
+            addHighlightRing(selRc.row, selRc.col, 0x3b82f6);
+            validMoves.forEach(m => {
+                const rc = sqToRc(m.to);
+                const isCapture = m.flags.includes('c') || m.flags.includes('e');
+                addHighlightRing(rc.row, rc.col, isCapture ? 0xef4444 : colorHighlight, isCapture);
+            });
+        }
+
+        function addHighlightRing(row, col, colorHex, isCapture = false) {
+            const geo = new THREE.RingGeometry(0.3, 0.4, 32);
+            const mat = new THREE.MeshBasicMaterial({ color: colorHex, side: THREE.DoubleSide, transparent: true, opacity: 0.6 });
+            const mesh = new THREE.Mesh(geo, mat);
+            mesh.rotation.x = -Math.PI / 2;
+            mesh.position.set(col - boardOffset, 0.01, row - boardOffset);
+            if (isCapture) mesh.scale.set(1.2, 1.2, 1.2);
+            highlightsGroup.add(mesh);
+            gsap.to(mesh.scale, { x: mesh.scale.x * 1.1, y: mesh.scale.y * 1.1, duration: 1, repeat: -1, yoyo: true, ease: "sine.inOut" });
+        }
+
+        function clearHighlights() {
+            while (highlightsGroup.children.length > 0) {
+                gsap.killTweensOf(highlightsGroup.children[0].scale);
+                highlightsGroup.remove(highlightsGroup.children[0]);
+            }
+        }
+
+        // --- Checkers rules (UI side) ---
+        function getCheckersMoves(turn, activePiece = null) {
+            let moves = [], jumps = [];
+            for (let r = 0; r < 8; r++) {
+                for (let c = 0; c < 8; c++) {
+                    if (activePiece && (r !== activePiece.r || c !== activePiece.c)) continue;
+                    const p = boardState[r][c];
+                    if (p && p.color === turn) {
+                        let dirs;
+                        if (p.isKing) dirs = [[1, 1], [1, -1], [-1, 1], [-1, -1]];
+                        else if (turn === 'b') dirs = [[1, 1], [1, -1]];
+                        else dirs = [[-1, 1], [-1, -1]];
+                        dirs.forEach(d => {
+                            const nr = r + d[0], nc = c + d[1];
+                            if (nr >= 0 && nr < 8 && nc >= 0 && nc < 8) {
+                                if (!boardState[nr][nc]) {
+                                    if (!activePiece) moves.push({ from: { r, c }, to: { r: nr, c: nc } });
+                                } else if (boardState[nr][nc].color !== turn) {
+                                    const jr = nr + d[0], jc = nc + d[1];
+                                    if (jr >= 0 && jr < 8 && jc >= 0 && jc < 8 && !boardState[jr][jc]) {
+                                        jumps.push({ from: { r, c }, to: { r: jr, c: jc }, jump: { r: nr, c: nc } });
+                                    }
+                                }
+                            }
+                        });
+                    }
+                }
+            }
+            if (activePiece) return jumps;
+            return jumps.length > 0 ? jumps : moves; // mandatory jumps
+        }
+
+        function handleCheckersClick(row, col) {
+            if (checkersWinner || (playAgainstAI && checkersTurn === 'b')) return;
+
+            let move = validMoves.find(m => m.to.r === row && m.to.c === col);
+            if (!move) move = validMoves.find(m => m.jump && m.jump.r === row && m.jump.c === col);
+
+            if (move && selectedSquare) { executeCheckersMove(move); return; }
+            if (checkersActivePiece) return;
+
+            const p = boardState[row][col];
+            if (p && p.color === checkersTurn) {
+                validMoves = getCheckersMoves(checkersTurn).filter(m => m.from.r === row && m.from.c === col);
+                selectedSquare = { r: row, c: col };
+                renderCheckersHighlights();
+            } else {
+                selectedSquare = null;
+                validMoves = [];
+                clearHighlights();
+            }
+        }
+
+        function executeCheckersMove(move) {
+            const p = boardState[move.from.r][move.from.c];
+            boardState[move.to.r][move.to.c] = p;
+            boardState[move.from.r][move.from.c] = null;
+            if (move.jump) boardState[move.jump.r][move.jump.c] = null;
+
+            let crowned = false;
+            if (p.color === 'w' && move.to.r === 0 && !p.isKing) { p.isKing = true; crowned = true; }
+            if (p.color === 'b' && move.to.r === 7 && !p.isKing) { p.isKing = true; crowned = true; }
+
+            selectedSquare = null;
+            validMoves = [];
+            clearHighlights();
+            syncCheckersTo3D();
+
+            let moreJumps = [];
+            if (move.jump && !crowned) moreJumps = getCheckersMoves(checkersTurn, move.to);
+
+            if (moreJumps.length > 0) {
+                checkersActivePiece = move.to;
+                validMoves = moreJumps;
+                selectedSquare = move.to;
+                renderCheckersHighlights();
+                if (playAgainstAI && checkersTurn === 'b') setTimeout(makeCheckersAIMove, 500);
+                return;
+            }
+
+            checkersActivePiece = null;
+            checkersTurn = checkersTurn === 'w' ? 'b' : 'w';
+            if (getCheckersMoves(checkersTurn).length === 0) {
+                checkersWinner = checkersTurn === 'w' ? 'b' : 'w';
+            }
+            updateStatusText();
+            if (playAgainstAI && checkersTurn === 'b' && !checkersWinner) setTimeout(makeCheckersAIMove, 600);
+        }
+
+        // Easy / Medium AI. Hard and Expert are handled by the search engine script at the bottom.
+        function makeCheckersAIMove() {
+            if (!playAgainstAI || checkersTurn !== 'b' || checkersWinner) return;
+            const moves = getCheckersMoves('b', checkersActivePiece);
+            if (moves.length === 0) return;
+            const jumps = moves.filter(m => m.jump);
+            const pool = (aiDifficulty !== 'Easy' && jumps.length > 0) ? jumps : moves;
+            executeCheckersMove(pool[Math.floor(Math.random() * pool.length)]);
+        }
+
+        function renderCheckersHighlights() {
+            clearHighlights();
+            if (!selectedSquare) return;
+            addHighlightRing(selectedSquare.r, selectedSquare.c, 0x3b82f6);
+            validMoves.forEach(m => addHighlightRing(m.to.r, m.to.c, m.jump ? 0xef4444 : colorHighlight, !!m.jump));
+        }
+
+        function updateStatusText() {
+            const titleEl = document.getElementById('status-title');
+            const subEl = document.getElementById('status-subtitle');
+            if (activeGame === 'chess') {
+                const turnName = chessEngine.turn() === 'w' ? 'White' : 'Black';
+                if (chessEngine.in_checkmate()) {
+                    titleEl.innerText = 'Checkmate';
+                    subEl.innerText = `${turnName} loses`;
+                } else if (chessEngine.in_draw() || chessEngine.in_stalemate()) {
+                    titleEl.innerText = 'Draw';
+                    subEl.innerText = 'Stalemate reached';
+                } else {
+                    titleEl.innerText = `${turnName} to move`;
+                    subEl.innerText = chessEngine.in_check() ? 'King is in check!' : (playAgainstAI ? 'Vs AI' : 'Pass & Play');
+                }
+            } else {
+                const turnName = checkersTurn === 'w' ? 'White' : 'Black';
+                if (checkersWinner) {
+                    titleEl.innerText = `${checkersWinner === 'w' ? 'White' : 'Black'} Wins!`;
+                    subEl.innerText = 'Game Over';
+                } else {
+                    titleEl.innerText = `Checkers - ${turnName} to move`;
+                    subEl.innerText = playAgainstAI ? 'Vs AI' : 'Pass & Play';
+                }
+            }
+        }
+
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+            controls.update();
+            renderer.render(scene, camera);
+        }
+    </script>
+
+    <script>
+(function () {
+    // Think time per level (ms). Easy/Medium keep the original behaviour.
+    const TIME = { Hard: 1200, Expert: 3500 };
+    const LEVELS = ['Easy', 'Medium', 'Hard', 'Expert'];
+
+    window.toggleDifficulty = function () {
+        aiDifficulty = LEVELS[(LEVELS.indexOf(aiDifficulty) + 1) % LEVELS.length];
+        document.getElementById('btn-diff').innerText = aiDifficulty;
+    };
+    aiDifficulty = 'Hard';
+    document.getElementById('btn-diff').innerText = 'Hard';
+
+    const setThinking = () => { document.getElementById('status-subtitle').innerText = 'Thinking…'; };
+
+    /* =================== CHESS =================== */
+    const VAL = { p: 100, n: 320, b: 330, r: 500, q: 900, k: 0 };
+    // Piece-square tables, row 0 = rank 8 (white's view)
+    const PST = {
+        p: [0,0,0,0,0,0,0,0, 50,50,50,50,50,50,50,50, 10,10,20,30,30,20,10,10, 5,5,10,25,25,10,5,5,
+            0,0,0,20,20,0,0,0, 5,-5,-10,0,0,-10,-5,5, 5,10,10,-20,-20,10,10,5, 0,0,0,0,0,0,0,0],
+        n: [-50,-40,-30,-30,-30,-30,-40,-50, -40,-20,0,0,0,0,-20,-40, -30,0,10,15,15,10,0,-30, -30,5,15,20,20,15,5,-30,
+            -30,0,15,20,20,15,0,-30, -30,5,10,15,15,10,5,-30, -40,-20,0,5,5,0,-20,-40, -50,-40,-30,-30,-30,-30,-40,-50],
+        b: [-20,-10,-10,-10,-10,-10,-10,-20, -10,0,0,0,0,0,0,-10, -10,0,5,10,10,5,0,-10, -10,5,5,10,10,5,5,-10,
+            -10,0,10,10,10,10,0,-10, -10,10,10,10,10,10,10,-10, -10,5,0,0,0,0,5,-10, -20,-10,-10,-10,-10,-10,-10,-20],
+        r: [0,0,0,0,0,0,0,0, 5,10,10,10,10,10,10,5, -5,0,0,0,0,0,0,-5, -5,0,0,0,0,0,0,-5,
+            -5,0,0,0,0,0,0,-5, -5,0,0,0,0,0,0,-5, -5,0,0,0,0,0,0,-5, 0,0,0,5,5,0,0,0],
+        q: [-20,-10,-10,-5,-5,-10,-10,-20, -10,0,0,0,0,0,0,-10, -10,0,5,5,5,5,0,-10, -5,0,5,5,5,5,0,-5,
+            0,0,5,5,5,5,0,-5, -10,5,5,5,5,5,0,-10, -10,0,5,0,0,0,0,-10, -20,-10,-10,-5,-5,-10,-10,-20],
+        k: [-30,-40,-40,-50,-50,-40,-40,-30, -30,-40,-40,-50,-50,-40,-40,-30, -30,-40,-40,-50,-50,-40,-40,-30,
+            -30,-40,-40,-50,-50,-40,-40,-30, -20,-30,-30,-40,-40,-30,-30,-20, -10,-20,-20,-20,-20,-20,-20,-10,
+            20,20,0,0,0,0,20,20, 20,30,10,0,0,10,30,20],
+        ke: [-50,-40,-30,-20,-20,-30,-40,-50, -30,-20,-10,0,0,-10,-20,-30, -30,-10,20,30,30,20,-10,-30,
+             -30,-10,30,40,40,30,-10,-30, -30,-10,30,40,40,30,-10,-30, -30,-10,20,30,30,20,-10,-30,
+             -30,-30,0,0,0,0,-30,-30, -50,-30,-30,-30,-30,-30,-30,-50]
+    };
+
+    // Static evaluation, positive = good for White
+    function evalChess() {
+        const b = chessEngine.board();
+        let material = 0;
+        for (let r = 0; r < 8; r++) for (let c = 0; c < 8; c++) {
+            const p = b[r][c];
+            if (p && p.type !== 'p' && p.type !== 'k') material += VAL[p.type];
+        }
+        const endgame = material < 2600;
+        let score = 0, wB = 0, bB = 0;
+        for (let r = 0; r < 8; r++) for (let c = 0; c < 8; c++) {
+            const p = b[r][c];
+            if (!p) continue;
+            const key = (p.type === 'k' && endgame) ? 'ke' : p.type;
+            const w = p.color === 'w';
+            const v = VAL[p.type] + PST[key][(w ? r : 7 - r) * 8 + c];
+            score += w ? v : -v;
+            if (p.type === 'b') { if (w) wB++; else bB++; }
+        }
+        if (wB >= 2) score += 30;
+        if (bB >= 2) score -= 30;
+        return score;
+    }
+
+    let deadline = 0, stopped = false, nodes = 0;
+    const tick = () => { if ((++nodes & 127) === 0 && Date.now() > deadline) stopped = true; return stopped; };
+
+    function orderMoves(ms, pv) {
+        for (const m of ms) {
+            let s = 0;
+            if (pv && m.from === pv.from && m.to === pv.to && m.promotion === pv.promotion) s += 1e6;
+            if (m.captured) s += 10 * VAL[m.captured] - VAL[m.piece] / 10 + 1000;
+            if (m.promotion) s += 800;
+            m.s = s;
+        }
+        ms.sort((a, b) => b.s - a.s);
+    }
+
+    function quiesce(alpha, beta, qd) {
+        if (tick()) return 0;
+        const stand = evalChess() * (chessEngine.turn() === 'w' ? 1 : -1);
+        if (qd <= 0) return stand;
+        if (stand >= beta) return beta;
+        if (stand > alpha) alpha = stand;
+        const caps = chessEngine.moves({ verbose: true }).filter(m => m.captured || m.promotion);
+        orderMoves(caps);
+        for (const m of caps) {
+            chessEngine.move(m);
+            const s = -quiesce(-beta, -alpha, qd - 1);
+            chessEngine.undo();
+            if (stopped) return 0;
+            if (s >= beta) return beta;
+            if (s > alpha) alpha = s;
+        }
+        return alpha;
+    }
+
+    function negamax(depth, alpha, beta, ply) {
+        if (tick()) return 0;
+        const ms = chessEngine.moves({ verbose: true });
+        if (ms.length === 0) return chessEngine.in_check() ? -100000 + ply : 0;
+        if (depth <= 0) {
+            if (chessEngine.in_check()) depth = 1; // check extension
+            else return quiesce(alpha, beta, 4);
+        }
+        orderMoves(ms);
+        for (const m of ms) {
+            chessEngine.move(m);
+            const s = -negamax(depth - 1, -beta, -alpha, ply + 1);
+            chessEngine.undo();
+            if (stopped) return 0;
+            if (s >= beta) return beta;
+            if (s > alpha) alpha = s;
+        }
+        return alpha;
+    }
+
+    function searchChess(limit) {
+        const ms = chessEngine.moves({ verbose: true });
+        deadline = Date.now() + limit; stopped = false; nodes = 0;
+        const start = Date.now();
+        let best = ms[0], pv = null;
+        for (let depth = 1; depth <= 20; depth++) {
+            orderMoves(ms, pv);
+            let alpha = -Infinity, iterBest = null, iterScore = -Infinity;
+            for (const m of ms) {
+                chessEngine.move(m);
+                const s = chessEngine.in_threefold_repetition() ? 0 : -negamax(depth - 1, -Infinity, -alpha, 1);
+                chessEngine.undo();
+                if (stopped) break;
+                if (s > iterScore) { iterScore = s; iterBest = m; }
+                if (s > alpha) alpha = s;
+            }
+            if (iterBest) { best = iterBest; pv = iterBest; }
+            if (stopped || iterScore > 90000) break;
+            if (Date.now() - start > limit * 0.4) break; // next depth won't finish
+        }
+        return best;
+    }
+
+    // Stockfish (real chess engine) in a Web Worker. Falls back to the built-in search if it can't load.
+    let sf = null, sfReady = false, sfFailed = false, sfPending = null;
+    function initStockfish() {
+        try {
+            const url = 'https://cdnjs.cloudflare.com/ajax/libs/stockfish.js/10.0.2/stockfish.js';
+            const blob = new Blob(["importScripts('" + url + "');"], { type: 'application/javascript' });
+            sf = new Worker(URL.createObjectURL(blob));
+            sf.onmessage = e => {
+                const line = typeof e.data === 'string' ? e.data : '';
+                if (line === 'uciok') sf.postMessage('isready');
+                else if (line === 'readyok') sfReady = true;
+                else if (line.startsWith('bestmove') && sfPending) {
+                    const done = sfPending; sfPending = null;
+                    done(line.split(' ')[1]);
+                }
+            };
+            sf.onerror = () => {
+                sfFailed = true; sfReady = false;
+                if (sfPending) { const done = sfPending; sfPending = null; done(null); }
+            };
+            sf.postMessage('uci');
+        } catch (err) { sfFailed = true; }
+    }
+    initStockfish();
+
+    function sfBestMove(fen, skill, ms) {
+        return new Promise(resolve => {
+            sfPending = resolve;
+            sf.postMessage('setoption name Skill Level value ' + skill);
+            sf.postMessage('position fen ' + fen);
+            sf.postMessage('go movetime ' + ms);
+            setTimeout(() => {
+                if (sfPending === resolve) { sfPending = null; sf.postMessage('stop'); resolve(null); }
+            }, ms + 6000);
+        });
+    }
+
+    const origChessAI = window.makeChessAIMove;
+    window.makeChessAIMove = function () {
+        if (!TIME[aiDifficulty]) return origChessAI();
+        if (activeGame !== 'chess' || chessEngine.game_over()) return;
+        setThinking();
+        const fen = chessEngine.fen();
+        const play = mv => {
+            if (!playAgainstAI || activeGame !== 'chess' || chessEngine.fen() !== fen) { updateStatusText(); return; }
+            executeChessMove(mv);
+        };
+        const fallback = () => setTimeout(() => play(searchChess(TIME[aiDifficulty])), 40);
+        if (sfReady && !sfFailed) {
+            const lvl = aiDifficulty === 'Expert' ? { skill: 20, ms: 3000 } : { skill: 10, ms: 1000 };
+            sfBestMove(fen, lvl.skill, lvl.ms).then(uci => {
+                if (!uci || uci === '(none)') return fallback();
+                play({ from: uci.slice(0, 2), to: uci.slice(2, 4), promotion: uci[4] });
+            });
+        } else fallback();
+    };
+
+    /* =================== CHECKERS =================== */
+    // Board: Int8Array(64). 1 white man, 2 white king, -1 black man, -2 black king
+    const ALL=[[1,1],[1,-1],[-1,1],[-1,-1]];
+    const dirsFor=p=>Math.abs(p)===2?ALL:(p>0?[[-1,1],[-1,-1]]:[[1,1],[1,-1]]);
+    function ckChains(b,r,c,steps,out){const p=b[r*8+c];let any=false;
+     for(const [dr,dc] of dirsFor(p)){const mr=r+dr,mc=c+dc,lr=r+2*dr,lc=c+2*dc;
+      if(lr<0||lr>7||lc<0||lc>7)continue;const mid=b[mr*8+mc];
+      if(mid!==0&&Math.sign(mid)!==Math.sign(p)&&b[lr*8+lc]===0){any=true;const nb=b.slice();nb[r*8+c]=0;nb[mr*8+mc]=0;
+       let np=p,cr=false;if(p===1&&lr===0){np=2;cr=true}if(p===-1&&lr===7){np=-2;cr=true}nb[lr*8+lc]=np;
+       const st=steps.concat([{from:{r,c},to:{r:lr,c:lc},jump:{r:mr,c:mc}}]);
+       if(cr)out.push(st);else ckChains(nb,lr,lc,st,out);}}
+     if(!any&&steps.length)out.push(steps);}
+    function ckTurns(b,side){const jumps=[];for(let i=0;i<64;i++)if(b[i]!==0&&Math.sign(b[i])===side)ckChains(b,i>>3,i&7,[],jumps);
+     if(jumps.length)return jumps;const mv=[];
+     for(let i=0;i<64;i++){const p=b[i];if(p===0||Math.sign(p)!==side)continue;const r=i>>3,c=i&7;
+      for(const [dr,dc] of dirsFor(p)){const nr=r+dr,nc=c+dc;if(nr>=0&&nr<8&&nc>=0&&nc<8&&b[nr*8+nc]===0)mv.push([{from:{r,c},to:{r:nr,c:nc}}]);}}
+     return mv;}
+    function ckApply(b,steps){const nb=b.slice();let p=nb[steps[0].from.r*8+steps[0].from.c];nb[steps[0].from.r*8+steps[0].from.c]=0;
+     for(const s of steps)if(s.jump)nb[s.jump.r*8+s.jump.c]=0;const last=steps[steps.length-1].to;
+     if(p===1&&last.r===0)p=2;if(p===-1&&last.r===7)p=-2;nb[last.r*8+last.c]=p;return nb;}
+
+    // ---- Zobrist ----
+    let seed=123456789;const rnd=()=>{seed^=seed<<13;seed^=seed>>>17;seed^=seed<<5;return seed>>>0;};
+    const Z1=[],Z2=[];for(let i=0;i<64*5;i++){Z1.push(rnd());Z2.push(rnd());}
+    const ZS1=rnd(),ZS2=rnd();
+    function hashOf(b,side){let h1=side===1?ZS1:0,h2=side===1?ZS2:0;
+     for(let i=0;i<64;i++){const p=b[i];if(p){const k=i*5+p+2;h1^=Z1[k];h2^=Z2[k];}}
+     return (h1>>>0)*2097152+((h2>>>0)&2097151);}
+
+    // ---- Evaluation (positive = good for White) ----
+    function ckEval(b){
+     let s=0,wc=0,bc=0,wk=[],bk=[],total=0;
+     for(let i=0;i<64;i++){const p=b[i];if(p)total++;}
+     const endgame=total<=8;
+     for(let i=0;i<64;i++){const p=b[i];if(!p)continue;const r=i>>3,c=i&7,king=Math.abs(p)===2;
+      let v=king?165:100;
+      if(!king){
+       v+=p>0?(7-r)*3:r*3;
+       if((p>0&&r===7)||(p<0&&r===0))v+=7;
+       if(c>=2&&c<=5&&r>=2&&r<=5)v+=3;
+       if(c===0||c===7)v+=1;
+      }else{
+       const cd=Math.abs(r-3.5)+Math.abs(c-3.5);v+=(7-cd)*(endgame?3:1);
+      }
+      if(p>0){s+=v;wc++;if(king)wk.push(i);}else{s-=v;bc++;if(king)bk.push(i);}
+     }
+     if(endgame){
+      // the side ahead should hunt: reward kings close to enemy pieces
+      const ahead=s>0?1:-1;
+      if(Math.abs(s)>60){
+       const hunters=ahead===1?wk:bk, prey=[];
+       for(let i=0;i<64;i++){const p=b[i];if(p&&Math.sign(p)===-ahead)prey.push(i);}
+       let d=0;for(const h of hunters)for(const q of prey)d+=Math.abs((h>>3)-(q>>3))+Math.abs((h&7)-(q&7));
+       if(hunters.length&&prey.length)s+=ahead*(40-Math.min(40,d/(hunters.length*prey.length)*3));
+      }
+     }
+     return s;}
+
+    // ---- Search ----
+    let ckTT=new Map(),ckHIST=new Int32Array(64*64),ckDl=0,ckStop=false,ckNodes=0;
+    const sig=t=>t[0].from.r*8+t[0].from.c+64*(t[t.length-1].to.r*8+t[t.length-1].to.c)+4096*t.length;
+    function ckSearch(b,side,depth,alpha,beta,ply,useMob){
+     if((++ckNodes&255)===0&&Date.now()>ckDl)ckStop=true;if(ckStop)return 0;
+     const key=hashOf(b,side);const e=ckTT.get(key);let ttSig=-1;
+     if(e){ttSig=e.sig;if(e.depth>=depth){if(e.flag===0)return e.score;if(e.flag===1&&e.score>=beta)return e.score;if(e.flag===2&&e.score<=alpha)return e.score;}}
+     const turns=ckTurns(b,side);
+     if(!turns.length)return -10000+ply;
+     if(ply>=48)return side*ckEval(b);
+     const forced=!!turns[0][0].jump;
+     if(depth<=0&&!forced)return side*ckEval(b);
+     // ordering
+     for(const t of turns){const sg=sig(t);t.o=(sg===ttSig)?1e9:(forced?t.length*1000:ckHIST[(t[0].from.r*8+t[0].from.c)*64+(t[t.length-1].to.r*8+t[t.length-1].to.c)]);}
+     turns.sort((x,y)=>y.o-x.o);
+     const a0=alpha;let best=-1e9,bsig=-1;
+     for(const t of turns){
+      const s=-ckSearch(ckApply(b,t),-side,depth-1,-beta,-alpha,ply+1);
+      if(ckStop)return 0;
+      if(s>best){best=s;bsig=sig(t);}
+      if(s>alpha)alpha=s;
+      if(alpha>=beta){if(!forced)ckHIST[(t[0].from.r*8+t[0].from.c)*64+(t[t.length-1].to.r*8+t[t.length-1].to.c)]+=depth*depth;break;}
+     }
+     ckTT.set(key,{depth,score:best,flag:best<=a0?2:(best>=beta?1:0),sig:bsig});
+     return best;}
+    function ckBest(b,side,limit){
+     const turns=ckTurns(b,side);if(!turns.length)return null;if(turns.length===1)return turns[0];
+     ckDl=Date.now()+limit;ckStop=false;ckNodes=0;if(ckTT.size>2e6)ckTT=new Map();ckHIST.fill(0);
+     const t0=Date.now();let best=turns[0],reached=0;
+     for(let depth=1;depth<=40;depth++){
+      let alpha=-1e9,ib=null,is=-1e9;
+      for(const t of turns){
+       const s=-ckSearch(ckApply(b,t),-side,depth-1,-1e9,-alpha,1)+Math.random()*0.5;
+       if(ckStop)break;if(s>is){is=s;ib=t;}if(s>alpha)alpha=s;}
+      if(ib){best=ib;reached=depth;turns.splice(turns.indexOf(ib),1);turns.unshift(ib);}
+      if(ckStop||Math.abs(is)>9000)break;
+      if(Date.now()-t0>limit*0.45)break;
+     }
+     return best;}
+
+
+    let ckQueue = [];
+    const origCkAI = window.makeCheckersAIMove;
+    window.makeCheckersAIMove = function () {
+        if (!TIME[aiDifficulty]) return origCkAI();
+        if (!playAgainstAI || checkersTurn !== 'b' || checkersWinner || activeGame !== 'checkers') return;
+
+        // Mid multi-jump: play the next planned step
+        if (checkersActivePiece) {
+            if (ckQueue.length) return executeCheckersMove(ckQueue.shift());
+            return origCkAI();
+        }
+
+        ckQueue = [];
+        setThinking();
+        setTimeout(() => {
+            if (!playAgainstAI || checkersTurn !== 'b' || checkersWinner || activeGame !== 'checkers') {
+                updateStatusText(); return;
+            }
+            const b = new Int8Array(64);
+            for (let r = 0; r < 8; r++) for (let c = 0; c < 8; c++) {
+                const p = boardState[r][c];
+                if (p) b[r * 8 + c] = (p.color === 'w' ? 1 : -1) * (p.isKing ? 2 : 1);
+            }
+            const seq = ckBest(b, -1, TIME[aiDifficulty]);
+            if (!seq) return origCkAI();
+            ckQueue = seq.slice(1);
+            updateStatusText();
+            executeCheckersMove(seq[0]);
+        }, 40);
+    };
+})();
+</script>
+
+</body>
+</html>
