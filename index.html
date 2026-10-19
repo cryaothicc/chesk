@@ -2,8 +2,8 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>chesk</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <title>Minimalist 3D Board Games</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/chess.js/0.10.3/chess.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
@@ -16,27 +16,31 @@
         #ui-layer { position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: 10; pointer-events: none; display: flex; flex-direction: column; justify-content: space-between; padding: 2rem; box-sizing: border-box; }
         .pointer-events-auto { pointer-events: auto; }
         .glass-panel { background: rgba(255,255,255,0.7); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); border: 1px solid rgba(255,255,255,0.3); box-shadow: 0 8px 32px rgba(0,0,0,0.05); border-radius: 9999px; }
+        #canvas-container, #ui-layer { height: 100dvh; }
+        @media (max-width: 640px) {
+            #ui-layer { padding: 0.75rem; padding-top: calc(0.75rem + env(safe-area-inset-top)); padding-bottom: calc(0.75rem + env(safe-area-inset-bottom)); }
+        }
     </style>
 </head>
 <body onload="initApp()">
     <div id="canvas-container"></div>
     <div id="ui-layer">
-        <div class="flex justify-between items-start w-full max-w-4xl mx-auto">
-            <div class="glass-panel px-6 py-3 pointer-events-auto">
-                <h1 id="status-title" class="text-xl font-semibold text-zinc-800 tracking-tight">White to move</h1>
+        <div class="flex flex-wrap justify-between items-start gap-2 sm:gap-3 w-full max-w-4xl mx-auto">
+            <div class="glass-panel px-4 py-2 sm:px-6 sm:py-3 pointer-events-auto">
+                <h1 id="status-title" class="text-base sm:text-xl font-semibold text-zinc-800 tracking-tight">White to move</h1>
                 <p id="status-subtitle" class="text-sm font-medium text-zinc-500 mt-0.5 h-5"></p>
             </div>
-            <div class="flex gap-3 pointer-events-auto">
-                <button id="btn-diff" onclick="toggleDifficulty()" class="glass-panel px-5 py-3 text-sm font-semibold text-zinc-600 hover:text-zinc-900 transition-colors">Hard</button>
-                <button id="btn-mode" onclick="toggleMode()" class="glass-panel px-5 py-3 text-sm font-semibold text-zinc-600 hover:text-zinc-900 transition-colors">Vs AI</button>
-                <button onclick="resetGame()" class="glass-panel px-5 py-3 text-sm font-semibold text-zinc-600 hover:text-zinc-900 transition-colors">Restart</button>
+            <div class="flex gap-2 sm:gap-3 pointer-events-auto">
+                <button id="btn-diff" onclick="toggleDifficulty()" class="glass-panel px-3 py-2 text-xs sm:px-5 sm:py-3 sm:text-sm font-semibold text-zinc-600 hover:text-zinc-900 transition-colors">Hard</button>
+                <button id="btn-mode" onclick="toggleMode()" class="glass-panel px-3 py-2 text-xs sm:px-5 sm:py-3 sm:text-sm font-semibold text-zinc-600 hover:text-zinc-900 transition-colors">Vs AI</button>
+                <button onclick="resetGame()" class="glass-panel px-3 py-2 text-xs sm:px-5 sm:py-3 sm:text-sm font-semibold text-zinc-600 hover:text-zinc-900 transition-colors">Restart</button>
             </div>
         </div>
         <div class="flex justify-center w-full pb-4">
             <div class="glass-panel flex items-center p-1.5 gap-1 pointer-events-auto relative">
                 <div id="nav-indicator" class="absolute top-1.5 bottom-1.5 left-1.5 w-[calc(50%-6px)] bg-white rounded-full shadow-sm transition-transform duration-500 ease-[cubic-bezier(0.4,0,0.2,1)]"></div>
-                <button onclick="switchGame('chess')" id="btn-chess" class="relative z-10 px-8 py-2.5 text-sm font-semibold tracking-wider text-zinc-800 transition-colors duration-300 w-32 text-center rounded-full">CHESS</button>
-                <button onclick="switchGame('checkers')" id="btn-checkers" class="relative z-10 px-8 py-2.5 text-sm font-semibold tracking-wider text-zinc-400 transition-colors duration-300 w-32 text-center rounded-full">CHECKERS</button>
+                <button onclick="switchGame('chess')" id="btn-chess" class="relative z-10 px-4 py-2 text-xs sm:px-8 sm:py-2.5 sm:text-sm font-semibold tracking-wider text-zinc-800 transition-colors duration-300 w-28 sm:w-32 text-center rounded-full">CHESS</button>
+                <button onclick="switchGame('checkers')" id="btn-checkers" class="relative z-10 px-4 py-2 text-xs sm:px-8 sm:py-2.5 sm:text-sm font-semibold tracking-wider text-zinc-400 transition-colors duration-300 w-28 sm:w-32 text-center rounded-full">CHECKERS</button>
             </div>
         </div>
     </div>
@@ -74,7 +78,13 @@
             init3D();
             buildLinelessBoard();
             window.addEventListener('resize', onWindowResize);
-            renderer.domElement.addEventListener('pointerdown', onPointerDown);
+            // Only treat a touch/click as a selection if it wasn't a drag (so orbiting doesn't select squares)
+            let downX = 0, downY = 0;
+            renderer.domElement.style.touchAction = 'none';
+            renderer.domElement.addEventListener('pointerdown', e => { if (e.isPrimary) { downX = e.clientX; downY = e.clientY; } });
+            renderer.domElement.addEventListener('pointerup', e => {
+                if (e.isPrimary && Math.hypot(e.clientX - downX, e.clientY - downY) < 8) onPointerDown(e);
+            });
             resetGame();
             animate();
         }
@@ -90,7 +100,7 @@
 
             renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
             renderer.setSize(window.innerWidth, window.innerHeight);
-            renderer.setPixelRatio(window.devicePixelRatio);
+            renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
             renderer.shadowMap.enabled = true;
             renderer.shadowMap.type = THREE.PCFSoftShadowMap;
             container.appendChild(renderer.domElement);
@@ -120,6 +130,22 @@
             boardGroup = new THREE.Group(); scene.add(boardGroup);
             piecesGroup = new THREE.Group(); scene.add(piecesGroup);
             highlightsGroup = new THREE.Group(); scene.add(highlightsGroup);
+            fitCamera(true);
+        }
+
+        // Keep the whole board in view on any screen shape (tall phones need the camera further back)
+        let lastAspect = 0;
+        function fitCamera(force) {
+            const aspect = window.innerWidth / window.innerHeight;
+            if (!force && Math.abs(aspect - lastAspect) / lastAspect < 0.05) return;
+            lastAspect = aspect;
+            const dist = Math.max(12.8, 13.5 / aspect);
+            const dir = camera.position.clone().sub(controls.target).normalize();
+            camera.position.copy(dir.multiplyScalar(dist).add(controls.target));
+            controls.minDistance = 5;
+            controls.maxDistance = Math.max(20, dist * 1.4);
+            scene.fog.density = Math.min(0.03, 0.03 * 12.8 / dist);
+            controls.update();
         }
 
         function buildLinelessBoard() {
@@ -537,6 +563,7 @@
             camera.aspect = window.innerWidth / window.innerHeight;
             camera.updateProjectionMatrix();
             renderer.setSize(window.innerWidth, window.innerHeight);
+            fitCamera();
         }
 
         function animate() {
